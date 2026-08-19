@@ -7,12 +7,20 @@ import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
  */
 export const COMPOSER_MENTION_DRAG_TYPE = "application/x-t3code-composer-mention";
 
-export function composerMentionFromTreePath(treePath: string): string | null {
+/**
+ * Serialize one tree row as a composer mention. `toDestination` maps the row's
+ * path onto the path the agent should receive, which differs from the row's own
+ * path whenever the tree is showing a directory outside the project.
+ */
+export function composerMentionFromTreePath(
+  treePath: string,
+  toDestination: (relativePath: string) => string = (relativePath) => relativePath,
+): string | null {
   const relativePath = treePath.replace(/\/+$/, "");
   if (relativePath.length === 0) {
     return null;
   }
-  return serializeComposerFileLink(relativePath);
+  return serializeComposerFileLink(toDestination(relativePath));
 }
 
 export function dataTransferHasComposerMention(types: ReadonlyArray<string>): boolean {

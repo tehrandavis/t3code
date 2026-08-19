@@ -15,6 +15,11 @@ export interface FileTreeDragStartEvent {
 export interface FileTreeDragMentionHost {
   /** Drop the tree's gesture-applied selection of the dragged row. */
   deselect(treePath: string): void;
+  /**
+   * Map a tree row's path onto the path the agent should receive. Read on each
+   * drag so a root change between drags is picked up.
+   */
+  toMentionDestination(relativePath: string): string;
 }
 
 export interface FileTreeDragMentionController {
@@ -74,7 +79,7 @@ export function createFileTreeDragMentionController(
       // part of the current selection drags the whole selection.
       const dragged = selection.includes(itemPath) ? selection : [itemPath];
       const mentions = dragged
-        .map((path) => composerMentionFromTreePath(path))
+        .map((path) => composerMentionFromTreePath(path, host.toMentionDestination))
         .filter((mention): mention is string => mention !== null);
       if (mentions.length === 0) {
         return;

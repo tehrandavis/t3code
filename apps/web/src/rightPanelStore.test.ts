@@ -252,6 +252,26 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("keeps the same relative path under two roots as two surfaces", () => {
+    useRightPanelStore.getState().openFile(refA, "todo.md");
+    useRightPanelStore.getState().openFile(refA, "todo.md", undefined, "/notes");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual([
+      "file:todo.md",
+      "file:/notes:todo.md",
+    ]);
+    expect(state.activeSurfaceId).toBe("file:/notes:todo.md");
+    expect(state.surfaces.at(-1)).toMatchObject({ relativePath: "todo.md", root: "/notes" });
+  });
+
+  it("leaves a project-relative file surface without a root", () => {
+    useRightPanelStore.getState().openFile(refA, "todo.md");
+
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces[0]).not.toHaveProperty("root");
+  });
+
   it("replaces the standalone explorer with peer file surfaces", () => {
     useRightPanelStore.getState().open(refA, "files");
     useRightPanelStore.getState().openFile(refA, "src/index.ts");

@@ -10,7 +10,9 @@ import {
   type PersistedUiState,
   persistState,
   reorderProjects,
+  resolveFileBrowserRoot,
   resolveProjectExpanded,
+  setFileBrowserRoot,
   setDefaultAdvertisedEndpointKey,
   setProjectExpanded,
   setThreadChangedFilesExpanded,
@@ -24,6 +26,7 @@ function makeUiState(overrides: Partial<UiState> = {}): UiState {
     threadLastVisitedAtById: {},
     threadChangedFilesExpandedById: {},
     defaultAdvertisedEndpointKey: null,
+    fileBrowserRootByProjectCwd: {},
     ...overrides,
   };
 }
@@ -159,6 +162,10 @@ describe("parsePersistedState", () => {
         invalid: "not-a-date",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      fileBrowserRootByProjectCwd: {
+        "/repo/a": "/repo",
+        "/repo/b": "" as unknown as string,
+      },
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
@@ -177,6 +184,9 @@ describe("parsePersistedState", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      fileBrowserRootByProjectCwd: {
+        "/repo/a": "/repo",
+      },
       threadChangedFilesExpandedById: {
         "environment:thread-1": {
           "turn-1": false,
@@ -251,6 +261,36 @@ function createLocalStorageStub(): Storage {
   };
 }
 
+describe("file browser root", () => {
+  it("falls back to the project when nothing is stored", () => {
+    expect(resolveFileBrowserRoot({}, "/repo/a")).toBe("/repo/a");
+  });
+
+  it("reads back a stored root regardless of a trailing separator", () => {
+    const state = setFileBrowserRoot(makeUiState(), "/repo/a/", "/repo");
+    expect(resolveFileBrowserRoot(state.fileBrowserRootByProjectCwd, "/repo/a")).toBe("/repo");
+  });
+
+  it("stores nothing when the root is the project itself", () => {
+    const state = setFileBrowserRoot(makeUiState(), "/repo/a", "/repo/a/");
+    expect(state.fileBrowserRootByProjectCwd).toEqual({});
+  });
+
+  it("clears a stored root", () => {
+    const browsing = setFileBrowserRoot(makeUiState(), "/repo/a", "/repo");
+    const reset = setFileBrowserRoot(browsing, "/repo/a", null);
+    expect(reset.fileBrowserRootByProjectCwd).toEqual({});
+    expect(resolveFileBrowserRoot(reset.fileBrowserRootByProjectCwd, "/repo/a")).toBe("/repo/a");
+  });
+
+  it("keeps roots separate per project", () => {
+    const first = setFileBrowserRoot(makeUiState(), "/repo/a", "/repo");
+    const both = setFileBrowserRoot(first, "/repo/b", "/other");
+    expect(resolveFileBrowserRoot(both.fileBrowserRootByProjectCwd, "/repo/a")).toBe("/repo");
+    expect(resolveFileBrowserRoot(both.fileBrowserRootByProjectCwd, "/repo/b")).toBe("/other");
+  });
+});
+
 describe("uiStateStore persistence", () => {
   let localStorageStub: Storage;
 
@@ -296,6 +336,7 @@ describe("uiStateStore persistence", () => {
         "environment:thread-1": "2026-02-25T12:35:00.000Z",
       },
       defaultAdvertisedEndpointKey: "desktop-core:lan:http",
+      fileBrowserRootByProjectCwd: {},
       threadChangedFilesExpansionVersion: 1,
       threadChangedFilesExpandedById: {
         "environment:thread-1": {

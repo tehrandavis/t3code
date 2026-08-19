@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   isExplicitRelativePath,
+  joinWorkspacePath,
   isUncPath,
   isWindowsAbsolutePath,
   isWindowsDrivePath,
   normalizeProjectPathForComparison,
   normalizeProjectPathForDispatch,
+  relativeWorkspacePath,
 } from "./path.ts";
 
 describe("path helpers", () => {
@@ -42,5 +44,61 @@ describe("path helpers", () => {
     expect(normalizeProjectPathForComparison("C:")).toBe(normalizeProjectPathForComparison("C:/"));
     // Non-root drive paths keep their trailing separator trimmed as before.
     expect(normalizeProjectPathForDispatch("C:\\repo\\")).toBe("C:\\repo");
+  });
+});
+
+describe("joinWorkspacePath", () => {
+  it("joins with the root's separator style", () => {
+    expect(joinWorkspacePath("/repo", "src/index.ts")).toBe("/repo/src/index.ts");
+    expect(joinWorkspacePath("/repo/", "src/index.ts")).toBe("/repo/src/index.ts");
+    expect(joinWorkspacePath("C:\\repo", "src/index.ts")).toBe("C:\\repo\\src\\index.ts");
+  });
+
+  it("returns the root for an empty relative path", () => {
+    expect(joinWorkspacePath("/repo/", "")).toBe("/repo");
+  });
+});
+
+describe("relativeWorkspacePath", () => {
+  it("matches the workspace-relative path when the target is inside the root", () => {
+    expect(relativeWorkspacePath("/repo", "/repo/src/index.ts")).toBe("src/index.ts");
+  });
+
+  it("walks up for a target outside the root", () => {
+    expect(relativeWorkspacePath("/home/me/repo", "/home/me/notes/todo.md")).toBe(
+      "../notes/todo.md",
+    );
+    expect(relativeWorkspacePath("/home/me/dev/repo", "/home/me/todo.md")).toBe("../../todo.md");
+  });
+
+  it("returns '.' when the paths are the same", () => {
+    expect(relativeWorkspacePath("/repo", "/repo/")).toBe(".");
+  });
+
+  it("compares windows segments case-insensitively and emits posix separators", () => {
+    expect(relativeWorkspacePath("C:\\Repo\\app", "c:\\repo\\notes\\todo.md")).toBe(
+      "../notes/todo.md",
+    );
+  });
+
+  it("returns null across windows drives", () => {
+    expect(relativeWorkspacePath("C:\\repo", "D:\\notes\\todo.md")).toBe(null);
+  });
+
+  it("returns null across UNC shares and between path kinds", () => {
+    expect(relativeWorkspacePath("\\\\server\\share\\repo", "\\\\server\\other\\todo.md")).toBe(
+      null,
+    );
+    expect(relativeWorkspacePath("/repo", "C:\\notes\\todo.md")).toBe(null);
+  });
+
+  it("relates paths within one UNC share", () => {
+    expect(relativeWorkspacePath("\\\\server\\share\\repo", "\\\\server\\share\\todo.md")).toBe(
+      "../todo.md",
+    );
+  });
+
+  it("returns null for a relative input", () => {
+    expect(relativeWorkspacePath("./repo", "/repo/src/index.ts")).toBe(null);
   });
 });

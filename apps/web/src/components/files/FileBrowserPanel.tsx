@@ -6,7 +6,7 @@ import type { EnvironmentId, ProjectEntry } from "@t3tools/contracts";
 import { FileTree, useFileTree, useFileTreeSearch } from "@pierre/trees/react";
 import { serializeComposerFileLink } from "@t3tools/shared/composerTrigger";
 import { RotateCw } from "lucide-react";
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
 import { InputGroup, InputGroupInput } from "~/components/ui/input-group";
@@ -18,20 +18,38 @@ import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 import { readLocalApi } from "~/localApi";
 import { T3_PIERRE_ICONS } from "~/pierre-icons";
+import { useDebouncedValue } from "~/state/queries";
 
+import FileBrowserRootBar from "./FileBrowserRootBar";
+import {
+  isProjectBrowseRoot,
+  isShallowBrowseRoot,
+  mentionDestination,
+  normalizeBrowseRoot,
+} from "./fileBrowserRoot";
 import { createFileTreeDragMentionController } from "./fileTreeDragMention";
 import { useProjectEntriesQuery } from "./projectFilesQueryState";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
-  cwd: string;
+  /** The project's workspace root. Mentions are measured from here. */
+  projectCwd: string;
+  /** The directory the tree lists. Equals `projectCwd` until the user browses out. */
+  browseRoot: string;
   projectName: string;
   /** File currently open in the preview pane; revealed and selected in the tree. */
   selectedPath: string | null;
   /** Bumped when the same path should be revealed again (e.g. re-opened from search). */
   selectedPathRevealId: number;
   onOpenFile: (relativePath: string) => void;
+  onBrowseRootChange: (root: string) => void;
 }
+
+/**
+ * Quiet time before a new root is listed. Walking up several folders should
+ * scan the folder the user stopped at, not every folder they passed through.
+ */
+const ROOT_COMMIT_DEBOUNCE_MS = 300;
 
 const TREE_UNSAFE_CSS = `
   :host {
@@ -100,15 +118,52 @@ function FileSearchField(props: {
 
 export default function FileBrowserPanel({
   environmentId,
-  cwd,
+  projectCwd,
+  browseRoot,
   projectName,
   selectedPath,
   selectedPathRevealId,
   onOpenFile,
+  onBrowseRootChange,
 }: FileBrowserPanelProps) {
   const { resolvedTheme } = useTheme();
   const composerRef = useComposerHandleContext();
-  const entriesQuery = useProjectEntriesQuery(environmentId, cwd);
+  const [pendingRoot, setPendingRoot] = useState(browseRoot);
+  const requestedRootRef = useRef(browseRoot);
+  const debouncedPendingRoot = useDebouncedValue(pendingRoot, ROOT_COMMIT_DEBOUNCE_MS);
+
+  // A root that changed anywhere but here (a reset, a restored preference)
+  // replaces whatever the bar is showing.
+  useEffect(() => {
+    if (normalizeBrowseRoot(browseRoot) === normalizeBrowseRoot(requestedRootRef.current)) return;
+    requestedRootRef.current = browseRoot;
+    setPendingRoot(browseRoot);
+  }, [browseRoot]);
+
+  useEffect(() => {
+    if (normalizeBrowseRoot(debouncedPendingRoot) === normalizeBrowseRoot(browseRoot)) return;
+    requestedRootRef.current = debouncedPendingRoot;
+    onBrowseRootChange(debouncedPendingRoot);
+  }, [browseRoot, debouncedPendingRoot, onBrowseRootChange]);
+
+  const navigateToRoot = useCallback(
+    async (nextRoot: string) => {
+      const normalized = normalizeBrowseRoot(nextRoot);
+      if (normalized.length === 0) return;
+      // A folder this shallow has no gitignore pruning to keep the scan cheap,
+      // so confirm before spending a scan on it.
+      if (isShallowBrowseRoot(normalized) && !isProjectBrowseRoot(projectCwd, normalized)) {
+        const confirmed = await readLocalApi()?.dialogs.confirm(
+          `List every file under ${normalized}? It is a large folder, so the listing will be slow and may be incomplete.`,
+        );
+        if (!confirmed) return;
+      }
+      setPendingRoot(normalized);
+    },
+    [projectCwd],
+  );
+
+  const entriesQuery = useProjectEntriesQuery(environmentId, browseRoot);
   const entries = entriesQuery.data?.entries ?? [];
   const entryKinds = useMemo(
     () => new Map(entries.map((entry) => [entry.path, entry.kind] as const)),
@@ -143,7 +198,9 @@ export default function FileBrowserPanel({
       return;
     }
     const relativePath = item.path.replace(/\/$/, "");
-    const mention = serializeComposerFileLink(relativePath);
+    const mention = serializeComposerFileLink(
+      mentionDestination({ projectCwd, browseRoot, relativePath }),
+    );
     const pointer = contextMenuPointerRef.current;
     const pointerIsFresh = pointer !== null && performance.now() - pointer.at < 1000;
     const anchorRect = context.anchorElement.getBoundingClientRect();
@@ -200,10 +257,15 @@ export default function FileBrowserPanel({
   });
 
   const treeModelRef = useRef<ReturnType<typeof useFileTree>["model"] | null>(null);
+  // The controller outlives any one root, so it reads the current one per drag.
+  const mentionDestinationRef = useRef((relativePath: string) => relativePath);
+  mentionDestinationRef.current = (relativePath) =>
+    mentionDestination({ projectCwd, browseRoot, relativePath });
   const dragMention = useMemo(
     () =>
       createFileTreeDragMentionController({
         deselect: (path) => treeModelRef.current?.getItem(path)?.deselect(),
+        toMentionDestination: (relativePath) => mentionDestinationRef.current(relativePath),
       }),
     [],
   );
@@ -348,10 +410,10 @@ export default function FileBrowserPanel({
     <div
       ref={panelRef}
       className="flex min-h-0 flex-1 flex-col bg-background"
-      data-file-browser-panel={`${environmentId}:${cwd}`}
+      data-file-browser-panel={`${environmentId}:${browseRoot}`}
     >
       <div
-        className="flex h-10 min-h-10 shrink-0 items-center gap-1 border-b border-border/60 bg-background px-2 in-data-[preview-panel-mode=inline]:mb-3 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7 in-data-[preview-panel-mode=inline]:border-b-transparent"
+        className="flex h-10 min-h-10 shrink-0 items-center gap-1 bg-background px-2 in-data-[preview-panel-mode=inline]:h-7 in-data-[preview-panel-mode=inline]:min-h-7"
         data-surface-subheader
       >
         <RefreshFilesButton isPending={entriesQuery.isPending} onRefresh={entriesQuery.refresh} />
@@ -363,6 +425,20 @@ export default function FileBrowserPanel({
           onClose={search.close}
         />
       </div>
+      <FileBrowserRootBar
+        environmentId={environmentId}
+        projectCwd={projectCwd}
+        browseRoot={pendingRoot}
+        projectName={projectName}
+        onNavigate={(root) => {
+          void navigateToRoot(root);
+        }}
+      />
+      {entriesQuery.data?.truncated ? (
+        <p className="shrink-0 px-2 py-1 text-[11px] leading-relaxed text-muted-foreground">
+          This folder is too large to list in full. Search covers only the files shown.
+        </p>
+      ) : null}
       {entriesQuery.error && entriesQuery.data === null ? (
         <div className="p-4 text-xs leading-relaxed text-destructive">{entriesQuery.error}</div>
       ) : (

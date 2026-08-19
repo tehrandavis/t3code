@@ -57,6 +57,7 @@ import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey, projectFileEditorCacheKey } from "./fileContentRevision";
 import { fileBreadcrumbs } from "./filePath";
 import { isMarkdownPreviewFile, setMarkdownTaskChecked } from "./filePreviewMode";
+import { isProjectBrowseRoot } from "./fileBrowserRoot";
 import { FileSaveCoordinator } from "./fileSaveCoordinator";
 import {
   confirmProjectFileQueryData,
@@ -67,7 +68,16 @@ import {
 
 interface FilePreviewPanelProps {
   environmentId: EnvironmentId;
-  cwd: string;
+  /** The project's workspace root. Only files under it can be edited. */
+  projectCwd: string;
+  /** The directory the file tree lists. */
+  browseRoot: string;
+  /**
+   * The directory `relativePath` is measured from. This is the project for
+   * anything opened from search, a diff, or a chat link, and the browse root
+   * for anything opened from the tree.
+   */
+  fileRoot: string;
   projectName: string;
   relativePath: string | null;
   threadRef: ScopedThreadRef;
@@ -78,6 +88,7 @@ interface FilePreviewPanelProps {
   revealRequestId: number;
   onOpenFile: (relativePath: string) => void;
   onPendingChange: (relativePath: string, pending: boolean) => void;
+  onBrowseRootChange: (root: string) => void;
 }
 
 const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
@@ -700,12 +711,49 @@ function EditableFileSurface({
   );
 }
 
+function ReadOnlyFileSurface(props: {
+  cacheKey: string;
+  contents: string;
+  relativePath: string;
+  resolvedTheme: "light" | "dark";
+  wordWrap: boolean;
+  onPostRender: FilePostRender;
+}) {
+  return (
+    <Virtualizer
+      className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
+      config={{
+        overscrollSize: 600,
+        intersectionObserverMargin: 1200,
+      }}
+    >
+      <File
+        file={{
+          name: props.relativePath,
+          contents: props.contents,
+          cacheKey: props.cacheKey,
+        }}
+        options={{
+          disableFileHeader: true,
+          overflow: props.wordWrap ? "wrap" : "scroll",
+          theme: resolveDiffThemeName(props.resolvedTheme),
+          themeType: props.resolvedTheme,
+          unsafeCSS: FILE_LINK_REVEAL_UNSAFE_CSS,
+          onPostRender: props.onPostRender,
+        }}
+        className="min-h-full"
+      />
+    </Virtualizer>
+  );
+}
+
 function RenderedMarkdownSurface({
   environmentId,
   cwd,
   relativePath,
   contents,
   threadRef,
+  canEdit,
   onPendingChange,
 }: Omit<
   EditableFileSurfaceProps,
@@ -717,6 +765,7 @@ function RenderedMarkdownSurface({
   | "onPostRender"
 > & {
   threadRef: ScopedThreadRef;
+  canEdit: boolean;
 }) {
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
@@ -733,6 +782,7 @@ function RenderedMarkdownSurface({
         threadRef={threadRef}
         className="mx-auto max-w-4xl px-6 py-5"
         onTaskListChange={({ markerOffset, checked }) => {
+          if (!canEdit) return;
           const currentContents =
             getOptimisticProjectFileQueryData(environmentId, cwd, relativePath)?.contents ??
             contents;
@@ -757,7 +807,9 @@ function initialExplorerOpen(): boolean {
 
 export default function FilePreviewPanel({
   environmentId,
-  cwd,
+  projectCwd,
+  browseRoot,
+  fileRoot,
   projectName,
   relativePath,
   threadRef,
@@ -768,6 +820,7 @@ export default function FilePreviewPanel({
   revealRequestId,
   onOpenFile,
   onPendingChange,
+  onBrowseRootChange,
 }: FilePreviewPanelProps) {
   const { resolvedTheme } = useTheme();
   const wordWrap = useClientSettings((settings) => settings.wordWrap);
@@ -780,8 +833,11 @@ export default function FilePreviewPanel({
   const openPreview = useAtomCommand(previewEnvironment.open, {
     reportFailure: false,
   });
+  // Writes stay inside the project: a file reached by browsing out of it opens
+  // read-only, so the editor never arms rather than failing at save time.
+  const canEdit = isProjectBrowseRoot(projectCwd, fileRoot);
   const isImage = relativePath !== null && isWorkspaceImagePreviewPath(relativePath);
-  const file = useProjectFileQuery(environmentId, cwd, relativePath, !isImage);
+  const file = useProjectFileQuery(environmentId, fileRoot, relativePath, !isImage);
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
   // Reading markdown rendered is a preference, not a property of one file. Keeping
   // it on the panel meant a thread switch dropped it and forced source back.
@@ -806,7 +862,7 @@ export default function FilePreviewPanel({
       (handledReveal?.path === relativePath && handledReveal.requestId === revealRequestId));
   const canOpenInBrowser =
     relativePath !== null && isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath);
-  const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
+  const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, fileRoot) : null;
   const breadcrumbs = useMemo(
     () => (relativePath ? fileBreadcrumbs(projectName, relativePath) : []),
     [projectName, relativePath],
@@ -1014,43 +1070,28 @@ export default function FilePreviewPanel({
             isMarkdown && renderMarkdown ? (
               <RenderedMarkdownSurface
                 environmentId={environmentId}
-                cwd={cwd}
+                cwd={fileRoot}
                 relativePath={relativePath}
                 threadRef={threadRef}
                 contents={file.data.contents}
+                canEdit={canEdit}
                 onPendingChange={onPendingChange}
               />
-            ) : file.data.truncated ? (
-              <Virtualizer
+            ) : file.data.truncated || !canEdit ? (
+              <ReadOnlyFileSurface
                 key={`${relativePath}:${resolvedTheme}:${file.data.byteLength}`}
-                className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
-                config={{
-                  overscrollSize: 600,
-                  intersectionObserverMargin: 1200,
-                }}
-              >
-                <File
-                  file={{
-                    name: relativePath,
-                    contents: file.data.contents,
-                    cacheKey: projectFileCacheKey(cwd, relativePath, file.data.contents),
-                  }}
-                  options={{
-                    disableFileHeader: true,
-                    overflow: wordWrap ? "wrap" : "scroll",
-                    theme: resolveDiffThemeName(resolvedTheme),
-                    themeType: resolvedTheme,
-                    unsafeCSS: FILE_LINK_REVEAL_UNSAFE_CSS,
-                    onPostRender: onFilePostRender,
-                  }}
-                  className="min-h-full"
-                />
-              </Virtualizer>
+                cacheKey={projectFileCacheKey(fileRoot, relativePath, file.data.contents)}
+                contents={file.data.contents}
+                relativePath={relativePath}
+                resolvedTheme={resolvedTheme}
+                wordWrap={wordWrap}
+                onPostRender={onFilePostRender}
+              />
             ) : (
               <EditableFileSurface
                 key={`${relativePath}:${resolvedTheme}`}
                 environmentId={environmentId}
-                cwd={cwd}
+                cwd={fileRoot}
                 relativePath={relativePath}
                 composerDraftTarget={composerDraftTarget}
                 contents={file.data.contents}
@@ -1073,13 +1114,17 @@ export default function FilePreviewPanel({
             )}
           >
             <FileBrowserPanel
-              key={`${environmentId}:${cwd}`}
+              key={`${environmentId}:${projectCwd}`}
               environmentId={environmentId}
-              cwd={cwd}
+              projectCwd={projectCwd}
+              browseRoot={browseRoot}
               projectName={projectName}
-              selectedPath={relativePath}
+              // A file opened from somewhere else is only revealed in the tree
+              // when the tree happens to be showing the root it came from.
+              selectedPath={isProjectBrowseRoot(browseRoot, fileRoot) ? relativePath : null}
               selectedPathRevealId={revealRequestId}
               onOpenFile={onOpenFile}
+              onBrowseRootChange={onBrowseRootChange}
             />
           </aside>
         ) : null}

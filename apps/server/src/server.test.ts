@@ -4775,6 +4775,44 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
+  // The Files panel can browse out of a project, which means listing and
+  // reading a directory the server holds no project record for.
+  it.effect("routes websocket rpc projects.listEntries for a directory above a workspace", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const parentDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-ws-project-parent-" });
+      yield* fs.makeDirectory(path.join(parentDir, "repo", "src"), { recursive: true });
+      yield* fs.writeFileString(
+        path.join(parentDir, "repo", "src", "index.ts"),
+        "export const answer = 42;\n",
+      );
+      yield* fs.writeFileString(path.join(parentDir, "notes.md"), "# notes\n");
+
+      yield* buildAppUnderTest();
+
+      const wsUrl = yield* getWsServerUrl("/ws");
+      const response = yield* Effect.scoped(
+        withWsRpcClient(wsUrl, (client) =>
+          Effect.all({
+            listing: client[WS_METHODS.projectsListEntries]({ cwd: parentDir }),
+            file: client[WS_METHODS.projectsReadFile]({
+              cwd: parentDir,
+              relativePath: "notes.md",
+            }),
+          }),
+        ),
+      );
+
+      assert.isTrue(response.listing.entries.some((entry) => entry.path === "notes.md"));
+      assert.isTrue(
+        response.listing.entries.some((entry) => entry.path === "repo/src/index.ts"),
+        "the nested workspace is listed as part of the parent directory",
+      );
+      assert.equal(response.file.contents, "# notes\n");
+    }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+  );
+
   it.effect("routes websocket rpc projects.searchEntries excludes gitignored files", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

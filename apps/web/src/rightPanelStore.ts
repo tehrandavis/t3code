@@ -42,6 +42,14 @@ export type RightPanelSurface =
       id: `file:${string}`;
       kind: "file";
       relativePath: string;
+      /**
+       * The directory `relativePath` is measured from. Absent means the
+       * project's own workspace root, which is every surface opened from
+       * search, diffs, or a chat link. The Files panel sets it when the user
+       * has browsed outside the project, so the same relative path opened
+       * under two roots stays two tabs.
+       */
+      root?: string;
       revealLine: number | null;
       revealRequestId: number;
     }
@@ -89,7 +97,7 @@ interface RightPanelStoreState {
     kind: Exclude<RightPanelKind, "file" | "terminal" | "pull-request">,
   ) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
-  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number, root?: string) => void;
   openPullRequest: (
     ref: ScopedThreadRef,
     target: { environmentId?: string; projectId: string; repository: string; number: number },
@@ -144,14 +152,22 @@ const browserSurface = (tabId: string | null): RightPanelSurface =>
     ? { id: `browser:${tabId}`, kind: "preview", resourceId: tabId }
     : { id: "browser:new", kind: "preview", resourceId: null };
 
+export function fileSurfaceId(relativePath: string, root?: string): `file:${string}` {
+  // Surfaces opened against the project keep their unqualified id so tabs
+  // persisted before roots existed still match.
+  return root === undefined ? `file:${relativePath}` : `file:${root}:${relativePath}`;
+}
+
 const fileSurface = (
   relativePath: string,
   revealLine: number | null,
   revealRequestId: number,
+  root?: string,
 ): RightPanelSurface => ({
-  id: `file:${relativePath}`,
+  id: fileSurfaceId(relativePath, root),
   kind: "file",
   relativePath,
+  ...(root === undefined ? {} : { root }),
   revealLine,
   revealRequestId,
 });
@@ -278,7 +294,19 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                         surface.revealRequestId >= 0
                           ? surface.revealRequestId
                           : 0;
-                      return [{ ...surface, revealLine, revealRequestId }];
+                      const root =
+                        typeof surface.root === "string" && surface.root.length > 0
+                          ? surface.root
+                          : undefined;
+                      return [
+                        {
+                          ...surface,
+                          ...(root === undefined ? {} : { root }),
+                          id: fileSurfaceId(surface.relativePath, root),
+                          revealLine,
+                          revealRequestId,
+                        },
+                      ];
                     }
                     if (surface.kind === "pull-request") {
                       if (
@@ -390,13 +418,13 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return upsertSurface(current, pullRequestSurface(target));
           }),
         })),
-      openFile: (ref, relativePath, line) =>
+      openFile: (ref, relativePath, line, root) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
             const withoutStandaloneExplorer = current.surfaces.filter(
               (surface) => surface.kind !== "files",
             );
-            const surfaceId = `file:${relativePath}` as const;
+            const surfaceId = fileSurfaceId(relativePath, root);
             const existing = withoutStandaloneExplorer.find(
               (surface): surface is Extract<RightPanelSurface, { kind: "file" }> =>
                 surface.id === surfaceId && surface.kind === "file",
@@ -405,6 +433,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               relativePath,
               normalizeRevealLine(line),
               (existing?.revealRequestId ?? 0) + 1,
+              root,
             );
             return {
               isOpen: true,

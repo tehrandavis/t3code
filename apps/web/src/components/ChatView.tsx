@@ -101,7 +101,8 @@ import {
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
 } from "../pendingUserInput";
-import { useUiStateStore } from "../uiStateStore";
+import { resolveFileBrowserRoot, useUiStateStore } from "../uiStateStore";
+import { isProjectBrowseRoot } from "./files/fileBrowserRoot";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -2694,6 +2695,20 @@ function ChatViewContent(props: ChatViewProps) {
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
   const activeWorkspaceRoot = activeThreadWorktreePath ?? activeProjectCwd ?? undefined;
+  // Where the Files panel is browsing. It starts at the workspace root and the
+  // user can move it out of the project; only that panel follows it.
+  const fileBrowserRootByProjectCwd = useUiStateStore((state) => state.fileBrowserRootByProjectCwd);
+  const setFileBrowserRoot = useUiStateStore((state) => state.setFileBrowserRoot);
+  const fileBrowserRoot = activeWorkspaceRoot
+    ? resolveFileBrowserRoot(fileBrowserRootByProjectCwd, activeWorkspaceRoot)
+    : "";
+  const handleFileBrowserRootChange = useCallback(
+    (root: string) => {
+      if (!activeWorkspaceRoot) return;
+      setFileBrowserRoot(activeWorkspaceRoot, root);
+    },
+    [activeWorkspaceRoot, setFileBrowserRoot],
+  );
   const activeTerminalLaunchContext =
     terminalUiLaunchContext?.threadId === activeThreadId ? terminalUiLaunchContext : null;
   // Default true while loading to avoid toolbar flicker.
@@ -3311,9 +3326,16 @@ function ChatViewContent(props: ChatViewProps) {
   const openFileSurface = useCallback(
     (relativePath: string) => {
       if (!activeThreadRef || !activeProject) return;
-      useRightPanelStore.getState().openFile(activeThreadRef, relativePath);
+      // A file opened from the tree is measured from whatever the tree is
+      // showing, so the surface carries that root unless it is the project.
+      const root =
+        activeWorkspaceRoot !== undefined &&
+        !isProjectBrowseRoot(activeWorkspaceRoot, fileBrowserRoot)
+          ? fileBrowserRoot
+          : undefined;
+      useRightPanelStore.getState().openFile(activeThreadRef, relativePath, undefined, root);
     },
-    [activeProject, activeThreadRef],
+    [activeProject, activeThreadRef, activeWorkspaceRoot, fileBrowserRoot],
   );
   // The thread's own change request, placed against the project it belongs to. Without a
   // project there is nothing to resolve it against, so the caller falls back to the browser.
@@ -6206,7 +6228,9 @@ function ChatViewContent(props: ChatViewProps) {
         <FilePreviewPanel
           key={`${activeProject.environmentId}:${activeWorkspaceRoot}`}
           environmentId={activeProject.environmentId}
-          cwd={activeWorkspaceRoot}
+          projectCwd={activeWorkspaceRoot}
+          browseRoot={fileBrowserRoot || activeWorkspaceRoot}
+          fileRoot={activeFileSurface?.root ?? activeWorkspaceRoot}
           projectName={activeProject.title}
           threadRef={activeThreadRef}
           composerDraftTarget={composerDraftTarget}
@@ -6219,6 +6243,7 @@ function ChatViewContent(props: ChatViewProps) {
           revealRequestId={activeFileSurface?.revealRequestId ?? 0}
           onOpenFile={openFileSurface}
           onPendingChange={handleFilePendingChange}
+          onBrowseRootChange={handleFileBrowserRootChange}
         />
       </Suspense>
     ) : null

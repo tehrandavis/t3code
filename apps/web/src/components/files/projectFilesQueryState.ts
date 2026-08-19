@@ -1,6 +1,7 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type {
   EnvironmentId,
+  FilesystemBrowseResult,
   ProjectListEntriesResult,
   ProjectReadFileResult,
 } from "@t3tools/contracts";
@@ -10,6 +11,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useCallback } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { filesystemEnvironment } from "~/state/filesystem";
 import { projectEnvironment } from "~/state/projects";
 import { useProjectPathSearch } from "~/state/queries";
 import { executeAtomQuery } from "@t3tools/client-runtime/state/runtime";
@@ -126,6 +128,35 @@ export function useProjectEntriesQuery(
   cwd: string,
 ): ProjectQueryState<ProjectListEntriesResult> {
   const atom = getProjectEntriesQueryAtom(environmentId, cwd);
+  const result = useAtomValue(atom);
+  const refreshAtom = useAtomRefresh(atom);
+  const refresh = useCallback(() => refreshAtom(), [refreshAtom]);
+  return {
+    data: Option.getOrNull(AsyncResult.value(result)),
+    error: errorMessage(result),
+    isPending: result.waiting,
+    refresh,
+  };
+}
+
+const EMPTY_FILESYSTEM_BROWSE_ATOM = Atom.make(
+  AsyncResult.initial<FilesystemBrowseResult, never>(false),
+).pipe(Atom.withLabel("filesystem-browse-query:empty"));
+
+/**
+ * Directory suggestions for a partially typed path. An empty query has nothing
+ * to complete, so it resolves without a request.
+ */
+export function useFilesystemBrowseQuery(
+  environmentId: EnvironmentId,
+  cwd: string,
+  partialPath: string,
+): ProjectQueryState<FilesystemBrowseResult> {
+  const trimmedPath = partialPath.trim();
+  const atom =
+    trimmedPath.length === 0
+      ? EMPTY_FILESYSTEM_BROWSE_ATOM
+      : filesystemEnvironment.browse({ environmentId, input: { cwd, partialPath: trimmedPath } });
   const result = useAtomValue(atom);
   const refreshAtom = useAtomRefresh(atom);
   const refresh = useCallback(() => refreshAtom(), [refreshAtom]);

@@ -1,6 +1,9 @@
 import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
-import { normalizeProjectPathForComparison } from "./lib/projectPaths";
+import {
+  normalizeProjectPathForComparison,
+  normalizeProjectPathForDispatch,
+} from "./lib/projectPaths";
 
 export const PERSISTED_STATE_KEY = "t3code:ui-state:v1";
 const THREAD_CHANGED_FILES_EXPANSION_VERSION = 1;
@@ -27,6 +30,7 @@ export interface PersistedUiState {
   defaultAdvertisedEndpointKey?: string | null;
   threadChangedFilesExpansionVersion?: typeof THREAD_CHANGED_FILES_EXPANSION_VERSION;
   threadChangedFilesExpandedById?: Record<string, Record<string, boolean>>;
+  fileBrowserRootByProjectCwd?: Record<string, string>;
 }
 
 export interface UiProjectState {
@@ -43,7 +47,16 @@ export interface UiEndpointState {
   defaultAdvertisedEndpointKey: string | null;
 }
 
-export interface UiState extends UiProjectState, UiThreadState, UiEndpointState {}
+export interface UiFileBrowserState {
+  /**
+   * Where the Files panel is browsing, keyed by project workspace root. Absent
+   * means the panel is showing the project itself.
+   */
+  fileBrowserRootByProjectCwd: Record<string, string>;
+}
+
+export interface UiState
+  extends UiProjectState, UiThreadState, UiEndpointState, UiFileBrowserState {}
 
 const initialState: UiState = {
   projectExpandedById: {},
@@ -51,6 +64,7 @@ const initialState: UiState = {
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},
   defaultAdvertisedEndpointKey: null,
+  fileBrowserRootByProjectCwd: {},
 };
 
 const LEGACY_PROJECT_CWD_PREFERENCE_PREFIX = "legacy-project-cwd:";
@@ -79,6 +93,18 @@ function sanitizeBooleanRecord(value: unknown): Record<string, boolean> {
   return Object.fromEntries(
     Object.entries(value).filter(
       (entry): entry is [string, boolean] => entry[0].length > 0 && typeof entry[1] === "boolean",
+    ),
+  );
+}
+
+function sanitizeStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] =>
+        entry[0].length > 0 && typeof entry[1] === "string" && entry[1].length > 0,
     ),
   );
 }
@@ -135,6 +161,7 @@ export function parsePersistedState(parsed: PersistedUiState): UiState {
       parsed.defaultAdvertisedEndpointKey.length > 0
         ? parsed.defaultAdvertisedEndpointKey
         : null,
+    fileBrowserRootByProjectCwd: sanitizeStringRecord(parsed.fileBrowserRootByProjectCwd),
   };
 }
 
@@ -207,6 +234,7 @@ export function persistState(state: UiState): void {
         defaultAdvertisedEndpointKey: state.defaultAdvertisedEndpointKey,
         threadChangedFilesExpansionVersion: THREAD_CHANGED_FILES_EXPANSION_VERSION,
         threadChangedFilesExpandedById: state.threadChangedFilesExpandedById,
+        fileBrowserRootByProjectCwd: state.fileBrowserRootByProjectCwd,
       } satisfies PersistedUiState),
     );
     if (!legacyKeysCleanedUp) {
@@ -304,6 +332,43 @@ export function setDefaultAdvertisedEndpointKey(state: UiState, key: string | nu
   };
 }
 
+function fileBrowserRootKey(projectCwd: string): string {
+  return normalizeProjectPathForComparison(projectCwd);
+}
+
+/**
+ * The root the Files panel should list for a project. Falls back to the project
+ * itself, which also covers a stored root that has since been deleted.
+ */
+export function resolveFileBrowserRoot(
+  fileBrowserRootByProjectCwd: Readonly<Record<string, string>>,
+  projectCwd: string,
+): string {
+  return fileBrowserRootByProjectCwd[fileBrowserRootKey(projectCwd)] ?? projectCwd;
+}
+
+export function setFileBrowserRoot(
+  state: UiState,
+  projectCwd: string,
+  root: string | null,
+): UiState {
+  const key = fileBrowserRootKey(projectCwd);
+  const nextRoot =
+    root === null || fileBrowserRootKey(root) === key
+      ? undefined
+      : normalizeProjectPathForDispatch(root);
+  if (state.fileBrowserRootByProjectCwd[key] === nextRoot) {
+    return state;
+  }
+  const fileBrowserRootByProjectCwd = { ...state.fileBrowserRootByProjectCwd };
+  if (nextRoot === undefined) {
+    delete fileBrowserRootByProjectCwd[key];
+  } else {
+    fileBrowserRootByProjectCwd[key] = nextRoot;
+  }
+  return { ...state, fileBrowserRootByProjectCwd };
+}
+
 export function resolveProjectExpanded(
   projectExpandedById: Readonly<Record<string, boolean>>,
   preferenceKeys: readonly string[],
@@ -387,6 +452,7 @@ interface UiStateStore extends UiState {
   setThreadChangedFilesExpanded: (threadId: string, turnId: string, expanded: boolean) => void;
   setDefaultAdvertisedEndpointKey: (key: string | null) => void;
   setProjectExpanded: (projectIds: string | readonly string[], expanded: boolean) => void;
+  setFileBrowserRoot: (projectCwd: string, root: string | null) => void;
   reorderProjects: (
     currentProjectOrder: readonly string[],
     draggedProjectIds: readonly string[],
@@ -406,6 +472,8 @@ export const useUiStateStore = create<UiStateStore>((set) => ({
     set((state) => setDefaultAdvertisedEndpointKey(state, key)),
   setProjectExpanded: (projectIds, expanded) =>
     set((state) => setProjectExpanded(state, projectIds, expanded)),
+  setFileBrowserRoot: (projectCwd, root) =>
+    set((state) => setFileBrowserRoot(state, projectCwd, root)),
   reorderProjects: (currentProjectOrder, draggedProjectIds, targetProjectIds) =>
     set((state) =>
       reorderProjects(state, currentProjectOrder, draggedProjectIds, targetProjectIds),
